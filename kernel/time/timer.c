@@ -1267,6 +1267,7 @@ static inline void __run_timers(struct tvec_base *base)
 }
 
 #ifdef CONFIG_NO_HZ_COMMON
+#ifndef CONFIG_PREEMPT_RT_FULL
 /*
  * Find out when the next timer event is due to happen. This
  * is used on S/390 to stop all activity when a CPU is idle.
@@ -1341,6 +1342,7 @@ cascade:
 	}
 	return expires;
 }
+#endif
 
 /*
  * Check, if the next hrtimer event is before the next timer wheel
@@ -1385,9 +1387,11 @@ static u64 cmp_next_hrtimer_event(u64 basem, u64 expires)
  */
 u64 get_next_timer_interrupt(unsigned long basej, u64 basem)
 {
+#ifndef CONFIG_PREEMPT_RT_FULL
 	struct tvec_base *base = this_cpu_ptr(&tvec_bases);
-	u64 expires = KTIME_MAX;
 	unsigned long nextevt;
+#endif
+	u64 expires = KTIME_MAX;
 
 	/*
 	 * Pretend that there is no timer pending if the cpu is offline.
@@ -1396,6 +1400,7 @@ u64 get_next_timer_interrupt(unsigned long basej, u64 basem)
 	if (cpu_is_offline(smp_processor_id()))
 		return expires;
 
+#ifndef CONFIG_PREEMPT_RT_FULL
 	spin_lock(&base->lock);
 	if (base->active_timers) {
 		if (time_before_eq(base->next_timer, base->timer_jiffies))
@@ -1407,7 +1412,14 @@ u64 get_next_timer_interrupt(unsigned long basej, u64 basem)
 			expires = basem + (nextevt - basej) * TICK_NSEC;
 	}
 	spin_unlock(&base->lock);
-
+#else
+	/*
+	 * On PREEMPT_RT we cannot sleep here. As a result we can't take
+	 * the base lock to check when the next timer is pending and so
+	 * we assume the next jiffy.
+	 */
+	expires = basem + TICK_NSEC;
+#endif
 	return cmp_next_hrtimer_event(basem, expires);
 }
 #endif
@@ -1595,7 +1607,7 @@ static void migrate_timers(int cpu)
 
 	BUG_ON(cpu_online(cpu));
 	old_base = per_cpu_ptr(&tvec_bases, cpu);
-	new_base = get_cpu_ptr(&tvec_bases);
+	new_base = get_local_ptr(&tvec_bases);
 	/*
 	 * The caller is globally serialized and nobody else
 	 * takes two locks at once, deadlock is not possible.
@@ -1619,7 +1631,7 @@ static void migrate_timers(int cpu)
 
 	spin_unlock(&old_base->lock);
 	spin_unlock_irq(&new_base->lock);
-	put_cpu_ptr(&tvec_bases);
+	put_local_ptr(&tvec_bases);
 }
 
 static int timer_cpu_notify(struct notifier_block *self,
