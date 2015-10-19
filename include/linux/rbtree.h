@@ -31,7 +31,7 @@
 
 #include <linux/kernel.h>
 #include <linux/stddef.h>
-#include <linux/rcupdate.h>
+// #include <linux/rcupdate.h>
 
 struct rb_node {
 	unsigned long  __rb_parent_color;
@@ -91,6 +91,10 @@ static inline void rb_link_node_rcu(struct rb_node *node, struct rb_node *parent
 {
 	node->__rb_parent_color = (unsigned long)parent;
 	node->rb_left = node->rb_right = NULL;
+
+// from include/linux/rcupdate.h:673
+#define rcu_assign_pointer(p, v) smp_store_release(&p, RCU_INITIALIZER(v))
+#define RCU_INITIALIZER(v) (typeof(*(v)) __force __rcu *)(v)
 
 	rcu_assign_pointer(*rb_link, node);
 }
