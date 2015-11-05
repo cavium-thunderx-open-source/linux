@@ -41,6 +41,10 @@ struct timerfd_ctx {
 	struct rcu_head rcu;
 	struct list_head clist;
 	bool might_cancel;
+#ifdef CONFIG_PREEMPT_RT_FULL
+	struct completion callback_completion;
+	struct swork_event callback;
+#endif
 };
 
 static LIST_HEAD(cancel_list);
@@ -68,11 +72,26 @@ static void timerfd_triggered(struct timerfd_ctx *ctx)
 	spin_unlock_irqrestore(&ctx->wqh.lock, flags);
 }
 
+#ifdef CONFIG_PREEMPT_RT_FULL
+static void swork_triggered(struct swork_event *e)
+{
+	struct timerfd_ctx *ctx = container_of(e, struct timerfd_ctx, callback);
+	timerfd_triggered(ctx);
+	complete(&ctx->callback_completion);
+}
+#endif
+
 static enum hrtimer_restart timerfd_tmrproc(struct hrtimer *htmr)
 {
 	struct timerfd_ctx *ctx = container_of(htmr, struct timerfd_ctx,
 					       t.tmr);
+
+#ifdef CONFIG_PREEMPT_RT_FULL
+	reinit_completion(&ctx->callback_completion);
+	swork_queue(&ctx->callback);
+#else
 	timerfd_triggered(ctx);
+#endif
 	return HRTIMER_NORESTART;
 }
 
@@ -210,8 +229,13 @@ static int timerfd_release(struct inode *inode, struct file *file)
 
 	if (isalarm(ctx))
 		alarm_cancel(&ctx->t.alarm);
-	else
+	else {
 		hrtimer_cancel(&ctx->t.tmr);
+#ifdef CONFIG_PREEMPT_RT_FULL
+		wait_for_completion(&ctx->callback_completion);
+		swork_put();
+#endif
+	}
 	kfree_rcu(ctx, rcu);
 	return 0;
 }
@@ -402,8 +426,15 @@ SYSCALL_DEFINE2(timerfd_create, int, clockid, int, flags)
 			   ctx->clockid == CLOCK_REALTIME_ALARM ?
 			   ALARM_REALTIME : ALARM_BOOTTIME,
 			   timerfd_alarmproc);
-	else
+	else {
 		hrtimer_init(&ctx->t.tmr, clockid, HRTIMER_MODE_ABS);
+#ifdef CONFIG_PREEMPT_RT_FULL
+		swork_get();
+		init_completion(&ctx->callback_completion);
+		complete_all(&ctx->callback_completion);
+		INIT_SWORK(&ctx->callback, swork_triggered);
+#endif
+	}
 
 	ctx->moffs = ktime_mono_to_real((ktime_t){ .tv64 = 0 });
 
