@@ -2065,8 +2065,6 @@ pl011_console_write(struct console *co, const char *s, unsigned int count)
 	unsigned long flags;
 	int locked = 1;
 
-	clk_enable(uap->clk);
-
 	/*
 	 * local_irq_save(flags);
 	 *
@@ -2106,7 +2104,6 @@ pl011_console_write(struct console *co, const char *s, unsigned int count)
 	if (locked)
 		spin_unlock_irqrestore(&uap->port.lock, flags);
 
-	clk_disable(uap->clk);
 }
 
 static void __init
@@ -2167,7 +2164,7 @@ static int __init pl011_console_setup(struct console *co, char *options)
 	/* Allow pins to be muxed in and configured */
 	pinctrl_pm_select_default_state(uap->port.dev);
 
-	ret = clk_prepare(uap->clk);
+	ret = clk_prepare_enable(uap->clk);
 	if (ret)
 		return ret;
 
