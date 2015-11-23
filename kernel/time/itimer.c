@@ -12,6 +12,7 @@
 #include <linux/time.h>
 #include <linux/posix-timers.h>
 #include <linux/hrtimer.h>
+#include <linux/slab.h>
 #include <trace/events/timer.h>
 
 #include <asm/uaccess.h>
@@ -118,13 +119,43 @@ SYSCALL_DEFINE2(getitimer, int, which, struct itimerval __user *, value)
 /*
  * The timer is automagically restarted, when interval != 0
  */
+#ifdef CONFIG_PREEMPT_RT_FULL
+struct it_callback_data {
+	struct swork_event it_real_callback;
+	struct pid *pid;
+};
+
+void it_real_callback_fn(struct swork_event *e)
+{
+	struct it_callback_data *d =
+		container_of(e, struct it_callback_data, it_real_callback);
+
+	kill_pid_info(SIGALRM, SEND_SIG_PRIV, d->pid);
+	put_pid(d->pid);
+	kfree(d);
+}
+#endif
+
 enum hrtimer_restart it_real_fn(struct hrtimer *timer)
 {
 	struct signal_struct *sig =
 		container_of(timer, struct signal_struct, real_timer);
 
 	trace_itimer_expire(ITIMER_REAL, sig->leader_pid, 0);
+#ifdef CONFIG_PREEMPT_RT_FULL
+	{
+		struct it_callback_data *d = kmalloc(sizeof(*d), GFP_ATOMIC);
+
+		if (!d)
+			return HRTIMER_NORESTART;
+
+		INIT_SWORK(&d->it_real_callback, it_real_callback_fn);
+		d->pid = get_pid(sig->leader_pid);
+		swork_queue(&d->it_real_callback);
+	}
+#else
 	kill_pid_info(SIGALRM, SEND_SIG_PRIV, sig->leader_pid);
+#endif
 
 	return HRTIMER_NORESTART;
 }
@@ -299,3 +330,7 @@ SYSCALL_DEFINE3(setitimer, int, which, struct itimerval __user *, value,
 		return -EFAULT;
 	return 0;
 }
+
+#ifdef CONFIG_PREEMPT_RT_FULL
+late_initcall(swork_get);
+#endif
